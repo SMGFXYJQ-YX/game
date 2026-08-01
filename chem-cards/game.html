@@ -1,0 +1,622 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>化学卡牌 · 闯关</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="topbar">
+  <span class="title">🧪 闯关对局</span>
+  <span class="links">
+    <a href="index.html">首页</a>
+    <a href="cardpool.html">牌库</a>
+    <a href="setting.html">设置</a>
+  </span>
+  <button class="btn sm ghost" style="margin-left:14px" onclick="location.reload()">重开本关</button>
+</div>
+
+<div class="game-wrap">
+  <div class="main-col">
+    <div class="hud" id="hud"></div>
+    <div class="public-zone" id="publicZone"></div>
+    <div class="hand-zone">
+      <div class="zone-label">你的手牌（用鼠标<b>拖动卡牌</b>到能反应的公共卡上出牌，反应成功后自动补新卡 · 在<b>可分解卡</b>上<b>右键</b>可分解）</div>
+      <div class="hand-cards" id="handCards"></div>
+      <div class="item-bar" id="itemBar"></div>
+      <div class="action-row" id="actionRow"></div>
+    </div>
+  </div>
+  <div class="history">
+    <h3>历史反应记录</h3>
+    <div class="list" id="histList"></div>
+  </div>
+</div>
+
+<div class="overlay" id="overlay" style="display:none"><div class="modal" id="modal"></div></div>
+
+<script src="config.js"></script>
+<script src="common.js"></script>
+<script>
+applyTheme();
+
+/* ---------- 关卡与状态 ---------- */
+const params = new URLSearchParams(location.search);
+const mode = params.get('mode') === 'study' ? 'study' : 'challenge';   // challenge=闯关, study=学习沙盒
+const HINTS = (mode === 'study');   // 反应提示（绿光高亮 + 卡手提示）仅在学习模式开启
+const levelId = parseInt(params.get('level') || '1', 10);
+const level = LEVELS.find(l => l.id === levelId) || LEVELS[0];
+const DECK_COPIES = 3;
+
+if (mode === 'study') {
+  document.querySelector('.topbar .title').textContent = '📚 学习模式';
+  document.title = '化学卡牌 · 学习模式';
+  const rb = document.querySelector('.topbar .btn.ghost');
+  if (rb) rb.textContent = '重开练习';
+}
+const HAND_LIMIT = 10;
+
+let deck = [], hand = [], publicCards = [], discard = [];
+let counts = {};
+let history = [];
+let uidCounter = 1;
+let dragId = null;
+let inventory = {};      // 道具剩余次数 {trash,bulb,beaker}
+let itemProgress = 0;    // 反应计数，每满 3 触发一次随机道具奖励
+
+const TYPE_KEYS = ['reactionTotal','combination','decomposition','displacement','doubleDecomp','neutralization','redox'];
+function zeroCounts(){ const o={}; TYPE_KEYS.forEach(k=>o[k]=0); return o; }
+
+function shuffle(a){ for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; }
+
+function initGame(){
+  const pool = (mode === 'study') ? CARD_POOL.map(c => c.id) : poolForLevel(level).map(c => c.id);
+  deck = [];
+  for(let k=0;k<DECK_COPIES;k++) pool.forEach(id => deck.push({uid:uidCounter++, id}));
+  shuffle(deck);
+  hand = deck.splice(0, INITIAL_HAND);
+  publicCards = deck.splice(0, PUBLIC_CARDS);
+  discard = [];
+  counts = zeroCounts();
+  history = [];
+  inventory = { trash:1, bulb:1, beaker:1 };
+  itemProgress = 0;
+  renderAll();
+}
+
+/* ---------- 渲染 ---------- */
+function renderAll(){ renderHud(); renderPublic(); renderHand(); renderHistory(); renderItems(); }
+
+function renderHud(){
+  const hud = document.getElementById('hud');
+  if (mode === 'study') {
+    const chips = TYPE_KEYS.map(k => {
+      const label = k==='reactionTotal' ? '总反应' : (REACTION_TYPE_LABEL[k] || k);
+      return '<span class="g">'+label+' <b>'+((counts[k]||0))+'</b></span>';
+    }).join('');
+    hud.innerHTML =
+      '<div class="lvname">📚 学习模式 · 自由练习（无目标，可随意拖拽探索反应）</div>'+
+      '<div class="goal">'+chips+'</div>';
+    return;
+  }
+  let goals = '';
+  for(const k in level.goal){
+    const label = k==='reactionTotal' ? '总反应' : (REACTION_TYPE_LABEL[k] || k);
+    const cur = counts[k] || 0, target = level.goal[k];
+    const done = cur >= target;
+    goals += '<span class="g">'+label+' <b style="'+(done?'color:#4caf50':'')+'">'+cur+'/'+target+'</b></span>';
+  }
+  const keys = Object.keys(level.goal);
+  const doneCount = keys.filter(k => (counts[k]||0) >= level.goal[k]).length;
+  const pct = Math.round(doneCount / keys.length * 100);
+  hud.innerHTML =
+    '<div class="lvname">第'+level.id+'关 · '+esc(level.name)+'</div>'+
+    '<div class="goal">'+goals+'</div>'+
+    '<div class="progress"><div class="bar"><i style="width:'+pct+'%"></i></div></div>';
+}
+
+function renderPublic(){
+  const z = document.getElementById('publicZone');
+  z.innerHTML = '<div class="zone-label">公共反应区（将手牌拖到能与其反应的卡上，成功后空位自动补新卡）</div>';
+  publicCards.forEach((pc, idx) => {
+    if (!pc) {
+      const slot = document.createElement('div'); slot.className = 'empty-slot'; z.appendChild(slot); return;
+    }
+    const card = CARD_MAP[pc.id];
+    const el = cardEl(card, {});
+    el.dataset.uid = pc.uid;
+    el.dataset.index = idx;
+    if (pc.uid === gSpawnUid) { el.classList.add('card-pop'); gSpawnUid = null; }
+    z.appendChild(el);
+  });
+}
+
+function renderHand(){
+  const wrap = document.getElementById('handCards'); wrap.innerHTML='';
+  const act = document.getElementById('actionRow'); act.innerHTML='';
+  let anyPlayable = false;
+  hand.forEach(hc => {
+    const card = CARD_MAP[hc.id];
+    const el = cardEl(card, {});
+    el.dataset.uid = hc.uid;
+    el.dataset.id = hc.id;
+    const playable = publicCards.some(p => p && isCanReact(hc.id, p.id));
+    if (playable) anyPlayable = true;
+    attachDragHandlers(el, hc);
+    wrap.appendChild(el);
+  });
+  // 摸牌按钮常驻
+  const b = document.createElement('button'); b.className='btn'; b.textContent='摸牌 (×'+MAX_DRAW+')';
+  if (hand.length >= HAND_LIMIT) { b.disabled = true; b.style.opacity='.5'; b.style.cursor='not-allowed'; }
+  b.onclick = drawCards;
+  act.appendChild(b);
+  if (HINTS && !anyPlayable && hand.length < HAND_LIMIT) {
+    const tip = document.createElement('span'); tip.className='hint';
+    tip.textContent = '当前手牌无法与公共卡反应，可摸牌或右键分解（学习提示）。';
+    act.appendChild(tip);
+  }
+  if (hand.length >= HAND_LIMIT) {
+    const tip = document.createElement('span'); tip.className='hint';
+    tip.textContent = '手牌已满（'+HAND_LIMIT+' 张），无法继续摸牌。';
+    act.appendChild(tip);
+  }
+}
+
+function attachDragHandlers(el, hc){
+  el.addEventListener('pointerdown', onDragStart);
+  el.addEventListener('dragstart', e => e.preventDefault());
+  el.addEventListener('selectstart', e => e.preventDefault());
+  if (DECOMPOSABLE[hc.id]) {
+    el.classList.add('decomp-tip');
+    el.addEventListener('contextmenu', e => { e.preventDefault(); decompose(hc.uid); });
+  }
+}
+
+let dragCard = null;      // {uid,id}
+let dragGhost = null;     // DOM clone
+let dragOffsetX = 0, dragOffsetY = 0;
+let itemDragId = null;    // 正在拖拽的道具 id（'trash' / 'beaker'）
+let itemGhost = null;     // 道具拖拽克隆体
+
+function onDragStart(e){
+  const el = e.currentTarget;
+  const id = el.dataset.id;
+  const uid = parseInt(el.dataset.uid, 10);
+  if (!id || !uid) return;
+  e.preventDefault();
+  window.getSelection().removeAllRanges();
+  try { el.setPointerCapture(e.pointerId); } catch(_){}
+  dragCard = { uid, id };
+  const rect = el.getBoundingClientRect();
+  dragOffsetX = e.clientX - rect.left;
+  dragOffsetY = e.clientY - rect.top;
+  dragGhost = el.cloneNode(true);
+  dragGhost.classList.add('dragging');
+  dragGhost.style.position = 'fixed';
+  dragGhost.style.left = rect.left + 'px';
+  dragGhost.style.top = rect.top + 'px';
+  dragGhost.style.margin = '0';
+  dragGhost.style.pointerEvents = 'none';
+  dragGhost.style.userSelect = 'none';
+  document.body.appendChild(dragGhost);
+  el.style.visibility = 'hidden';
+  el.dataset.dragging = '1';
+  updateDropHighlights();
+}
+
+function onDragMove(e){
+  if (dragCard && dragGhost){
+    e.preventDefault();
+    window.getSelection().removeAllRanges();
+    dragGhost.style.left = (e.clientX - dragOffsetX) + 'px';
+    dragGhost.style.top = (e.clientY - dragOffsetY) + 'px';
+    updateDropHighlights();
+  }
+  if (itemDragId && itemGhost){
+    e.preventDefault();
+    window.getSelection().removeAllRanges();
+    itemGhost.style.left = (e.clientX - 22) + 'px';
+    itemGhost.style.top = (e.clientY - 22) + 'px';
+  }
+}
+
+function onDragEnd(e){
+  if (!dragCard && !itemDragId) return;
+  window.getSelection().removeAllRanges();
+
+  if (dragCard){
+    const handEl = document.querySelector('.hand-cards .card[data-uid="'+dragCard.uid+'"]');
+    if (handEl) { handEl.style.visibility = ''; handEl.style.opacity = ''; delete handEl.dataset.dragging; }
+    if (dragGhost) { dragGhost.remove(); dragGhost = null; }
+    document.querySelectorAll('.public-zone .card.reactable').forEach(c => c.classList.remove('reactable'));
+    const target = findPublicCardAt(e.clientX, e.clientY);
+    if (target && isCanReact(dragCard.id, target.id)) {
+      playCard(dragCard.uid, target.uid);
+    }
+    dragCard = null;
+  }
+
+  if (itemDragId){
+    if (itemGhost) { itemGhost.remove(); itemGhost = null; }
+    document.querySelectorAll('.hand-cards .card.item-droppable').forEach(c => c.classList.remove('item-droppable'));
+    const itemEl = document.querySelector('.item-bar .item[data-item="'+itemDragId+'"]');
+    if (itemEl) itemEl.style.visibility = '';
+    const target = findHandCardAt(e.clientX, e.clientY);
+    if (target && inventory[itemDragId] > 0) {
+      if (itemDragId === 'trash') useTrash(target.uid);
+      else if (itemDragId === 'beaker') useBeaker(target.uid);
+    }
+    itemDragId = null;
+  }
+}
+
+function findPublicCardAt(x, y){
+  // 临时隐藏 ghost 避免命中自身
+  if (dragGhost) dragGhost.style.display = 'none';
+  let el = document.elementFromPoint(x, y);
+  if (dragGhost) dragGhost.style.display = '';
+  while (el && !el.classList.contains('public-zone')) {
+    if (el.classList.contains('card') && el.dataset.uid) {
+      const uid = parseInt(el.dataset.uid, 10);
+      const pc = publicCards.find(p => p && p.uid === uid);
+      if (pc) return pc;
+    }
+    el = el.parentElement;
+  }
+  return null;
+}
+
+function updateDropHighlights(){
+  if (!HINTS) {
+    document.querySelectorAll('.public-zone .card.reactable').forEach(c => c.classList.remove('reactable'));
+    return;
+  }
+  document.querySelectorAll('.public-zone .card').forEach(el => {
+    const id = el.dataset.id;
+    if (dragCard && id && isCanReact(dragCard.id, id)) el.classList.add('reactable');
+    else el.classList.remove('reactable');
+  });
+}
+
+document.addEventListener('pointermove', onDragMove);
+document.addEventListener('pointerup', onDragEnd);
+document.addEventListener('pointercancel', onDragEnd);
+document.addEventListener('selectstart', e => { if (e.target.closest('.card')) e.preventDefault(); });
+document.addEventListener('dragstart', e => { if (e.target.closest('.card')) e.preventDefault(); });
+document.addEventListener('contextmenu', e => { if (e.target.closest('.card')) e.preventDefault(); });
+
+/* ---------- 道具系统 ---------- */
+function itemName(id){ const it = ITEMS.find(i => i.id === id); return it ? it.name : id; }
+
+function startItemDrag(e, itemId){
+  if (!inventory[itemId] || inventory[itemId] <= 0) return;   // 无剩余次数
+  e.preventDefault();
+  window.getSelection().removeAllRanges();
+  itemDragId = itemId;
+  const el = e.currentTarget;
+  const rect = el.getBoundingClientRect();
+  itemGhost = el.cloneNode(true);
+  itemGhost.classList.add('dragging');
+  itemGhost.style.position = 'fixed';
+  itemGhost.style.left = rect.left + 'px';
+  itemGhost.style.top = rect.top + 'px';
+  itemGhost.style.margin = '0';
+  itemGhost.style.pointerEvents = 'none';
+  document.body.appendChild(itemGhost);
+  el.style.visibility = 'hidden';
+  // 提示手牌为可投放目标
+  document.querySelectorAll('.hand-cards .card').forEach(c => c.classList.add('item-droppable'));
+}
+
+function findHandCardAt(x, y){
+  let el = document.elementFromPoint(x, y);
+  while (el && !el.classList.contains('hand-cards')) {
+    if (el.classList.contains('card') && el.dataset.uid) {
+      const uid = parseInt(el.dataset.uid, 10);
+      const hc = hand.find(h => h.uid === uid);
+      if (hc) return hc;
+    }
+    el = el.parentElement;
+  }
+  return null;
+}
+
+function renderItems(){
+  const bar = document.getElementById('itemBar');
+  if (!bar) return;
+  bar.innerHTML = '';
+  ITEMS.forEach(it => {
+    const cnt = inventory[it.id] || 0;
+    const el = document.createElement('div');
+    el.className = 'item tool' + (cnt <= 0 ? ' disabled' : '');
+    el.dataset.item = it.id;
+    el.title = it.name + '：' + it.desc;
+    el.innerHTML = '<span class="ico">' + it.icon + '</span><span class="nm">' + it.name + '</span><span class="cnt">×' + cnt + '</span>';
+    if (it.use === 'drag') {
+      el.addEventListener('pointerdown', e => startItemDrag(e, it.id));
+    } else {
+      el.addEventListener('click', () => { if ((inventory[it.id]||0) > 0) useBulb(); });
+    }
+    bar.appendChild(el);
+  });
+}
+
+function useTrash(handUid){
+  const idx = hand.findIndex(h => h.uid === handUid);
+  if (idx < 0) return;
+  const hc = hand[idx];
+  hand.splice(idx, 1);
+  discard.push(hc);
+  inventory.trash--;
+  playAudio('draw');
+  renderAll();
+}
+
+function useBeaker(handUid){
+  const hi = hand.findIndex(h => h.uid === handUid);
+  if (hi < 0) return;
+  const avail = [];
+  publicCards.forEach((p, i) => { if (p) avail.push(i); });
+  if (avail.length === 0) return;
+  const pi = avail[Math.floor(Math.random() * avail.length)];
+  const pub = publicCards[pi];
+  const hc = hand[hi];
+  publicCards[pi] = hc;     // 手牌进公共区
+  hand[hi] = pub;           // 公共卡进手牌
+  inventory.beaker--;
+  playAudio('draw');
+  renderAll();
+}
+
+function useBulb(){
+  if ((inventory.bulb||0) <= 0) return;
+  inventory.bulb--;
+  const pairs = [];
+  publicCards.forEach(p => {
+    if (!p) return;
+    hand.forEach(h => { if (isCanReact(p.id, h.id)) pairs.push({ p, h }); });
+  });
+  if (pairs.length > 0) {
+    const pick = pairs[Math.floor(Math.random() * pairs.length)];
+    highlightHint(pick.p.uid, pick.h.uid);
+  } else {
+    refreshPublic();
+  }
+  renderItems();
+}
+
+function highlightHint(pubUid, handUid){
+  const pEl = document.querySelector('.public-zone .card[data-uid="' + pubUid + '"]');
+  const hEl = document.querySelector('.hand-cards .card[data-uid="' + handUid + '"]');
+  if (pEl) pEl.classList.add('bulb-hint');
+  if (hEl) hEl.classList.add('bulb-hint');
+  setTimeout(() => {
+    if (pEl) pEl.classList.remove('bulb-hint');
+    if (hEl) hEl.classList.remove('bulb-hint');
+  }, 2500);
+}
+
+function refreshPublic(){
+  publicCards.forEach(p => { if (p) discard.push(p); });
+  publicCards = [null, null, null, null, null];
+  fillEmptySlots();
+  renderPublic();
+  renderItems();
+}
+
+/* 每完成 3 次反应，随机获得一个道具使用次数 */
+function onReactionDone(){
+  itemProgress++;
+  if (itemProgress >= 3) {
+    itemProgress -= 3;
+    const ids = ITEMS.map(i => i.id);
+    const pick = ids[Math.floor(Math.random() * ids.length)];
+    inventory[pick] = (inventory[pick] || 0) + 1;
+    floatText(window.innerWidth / 2, 70, '获得道具：' + itemName(pick));
+    renderItems();
+  }
+}
+
+function renderHistory(){
+  const l = document.getElementById('histList'); l.innerHTML='';
+  history.forEach(h => {
+    const d = document.createElement('div');
+    d.className = 'item' + (h.isDecomp ? ' decomp' : '');
+    d.innerHTML = '<div class="eq">'+esc(h.eq)+'</div><div class="ty">'+esc(h.type)+(h.isDecomp?' · 分解':'')+'</div>';
+    l.appendChild(d);
+  });
+}
+
+/* ---------- 操作 ---------- */
+let gSpawnUid = null;   // 刚补进公共区、需要 pop 动画的卡
+
+function playCard(handUid, pubUid){
+  const hi = hand.findIndex(h => h.uid === handUid);
+  const pi = publicCards.findIndex(p => p && p.uid === pubUid);
+  if (hi < 0 || pi < 0) return;
+  const hc = hand[hi];
+  const pub = publicCards[pi];
+  if (!isCanReact(hc.id, pub.id)) return;
+  const r = getReaction(hc.id, pub.id);
+  if (!r) return;
+
+  // 特效位置
+  const targetEl = document.querySelector('.public-zone .card[data-uid="'+pubUid+'"]');
+  const rect = targetEl ? targetEl.getBoundingClientRect() : { left:0, top:0, width:0, height:0 };
+  const cx = rect.left + rect.width/2, cy = rect.top + rect.height/2;
+
+  // 被反应公共卡位置：反应双方两张卡，各向一个随机方向发射
+  const pubCard = CARD_MAP[pub.id];
+  dropCardEffect(cx, cy, [pubCard, CARD_MAP[hc.id]]);
+
+  discard.push(pub, hc);
+  hand.splice(hi, 1);
+  publicCards[pi] = null;
+
+  counts.reactionTotal++;
+  r.types.forEach(t => counts[t] = (counts[t]||0) + 1);
+  addHistory(r.equation, r.type, false);
+  onReactionDone();
+
+  fillEmptySlots();
+  gSpawnUid = publicCards[pi] ? publicCards[pi].uid : null;
+  playAudio('success');
+  burstEffect(cx, cy);
+  floatText(cx, cy - 20, r.type);
+  renderAll();
+  if (mode === 'challenge' && checkWin()) showWin();
+}
+
+function fillEmptySlots(){
+  for (let i=0;i<publicCards.length;i++){
+    if (publicCards[i]) continue;
+    if (deck.length === 0) recycle();
+    if (deck.length === 0) break;
+    publicCards[i] = deck.pop();
+  }
+}
+
+function decompose(handUid){
+  const idx = hand.findIndex(h => h.uid === handUid);
+  if (idx < 0) return;
+  const hc = hand[idx];
+  const d = DECOMPOSABLE[hc.id];
+  if (!d) return;
+  hand.splice(idx, 1);
+  discard.push(hc);
+  d.products.forEach(pid => hand.push({ uid: uidCounter++, id: pid }));
+  counts.reactionTotal++;
+  counts.decomposition = (counts.decomposition||0) + 1;
+  addHistory(d.equation, '分解反应', true);
+  onReactionDone();
+  playAudio('success');
+  renderAll();
+  if (mode === 'challenge' && checkWin()) showWin();
+}
+
+function drawCards(){
+  if (hand.length >= HAND_LIMIT) return;
+  for (let i=0;i<MAX_DRAW;i++){
+    if (hand.length >= HAND_LIMIT) break;
+    if (deck.length === 0) recycle();
+    if (deck.length === 0) break;
+    hand.push(deck.pop());
+  }
+  fillEmptySlots();
+  // 仍无法反应 → 防卡死：公共区 5 张全部换新
+  if (!hand.some(h => publicCards.some(p => p && isCanReact(h.id, p.id)))) {
+    if (deck.length < PUBLIC_CARDS) recycle();
+    if (deck.length >= PUBLIC_CARDS) {
+      publicCards.filter(Boolean).forEach(p => discard.push(p));
+      publicCards = deck.splice(deck.length - PUBLIC_CARDS, PUBLIC_CARDS);
+    }
+  }
+  fillEmptySlots();
+  playAudio('draw');
+  renderAll();
+}
+
+function recycle(){
+  const inUse = new Set();
+  publicCards.forEach(p => { if (p) inUse.add(p.uid); });
+  hand.forEach(h => inUse.add(h.uid));
+  const avail = discard.filter(c => !inUse.has(c.uid));
+  if (avail.length === 0) return;
+  deck = deck.concat(avail);
+  discard = discard.filter(c => inUse.has(c.uid));
+  shuffle(deck);
+}
+
+function addHistory(eq, type, isDecomp){
+  history.unshift({ eq, type, isDecomp });
+  if (history.length > 200) history.pop();
+}
+
+function checkWin(){
+  for (const k in level.goal) {
+    if ((counts[k]||0) < level.goal[k]) return false;
+  }
+  return true;
+}
+
+function burstEffect(x, y){
+  const wrap = document.createElement('div'); wrap.className = 'effect-burst'; document.body.appendChild(wrap);
+  const colors = ['#4caf50','#2196f3','#ff9800','#9c27b0','#00bcd4'];
+  for (let i=0;i<18;i++){
+    const p = document.createElement('div'); p.className = 'particle';
+    const ang = (Math.PI*2*i/18) + Math.random()*0.4;
+    const dist = 40 + Math.random()*50;
+    p.style.left = x + 'px'; p.style.top = y + 'px';
+    p.style.background = colors[i % colors.length];
+    p.style.setProperty('--tx', Math.cos(ang)*dist + 'px');
+    p.style.setProperty('--ty', Math.sin(ang)*dist + 'px');
+    wrap.appendChild(p);
+  }
+  setTimeout(() => wrap.remove(), 750);
+}
+
+function floatText(x, y, text){
+  const el = document.createElement('div'); el.className = 'float-text';
+  el.textContent = text; el.style.left = x + 'px'; el.style.top = y + 'px';
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 1050);
+}
+
+function dropCardEffect(x, y, cards){
+  cards.forEach((c, i) => {
+    const ct = CARD_TYPES[c.type] || { color:'#90a4ae' };
+    const el = document.createElement('div');
+    el.className = 'card-drop';
+    el.style.setProperty('--ctype', ct.color);
+    el.style.left = (x - 48) + 'px';
+    el.style.top = (y - 66) + 'px';
+    el.textContent = c.formula;
+    el.style.opacity = '1';
+    document.body.appendChild(el);
+    // 有初速度的抛射：发射角度随机（向下扇形 ±70°），两侧各一张
+    const side = i % 2 === 0 ? -1 : 1;
+    const spread = side * (10 + Math.random() * 60) * Math.PI / 180; // 与竖直向下夹角
+    const a = Math.PI / 2 + spread;            // 屏幕坐标 y 向下为正
+    const speed = 260 + Math.random() * 180;    // 初速度 px/s
+    let vx = Math.cos(a) * speed;
+    let vy = Math.sin(a) * speed;               // 向下
+    const grav = 760;                            // 重力加速度 px/s²
+    let px = 0, py = 0, rot = Math.random() * 360;
+    const vrot = (Math.random() * 2 - 1) * 340;  // 旋转角速度 deg/s
+    const life = 1000; let t = 0; let last = performance.now();
+    (function frame(now){
+      const dt = Math.min((now - last) / 1000, 0.05); last = now; t += dt * 1000;
+      px += vx * dt; vy += grav * dt; py += vy * dt; rot += vrot * dt;
+      el.style.transform = `translate(${px}px, ${py}px) rotate(${rot}deg)`;
+      el.style.opacity = t < life * 0.6 ? '1' : String(Math.max(0, 1 - (t - life * 0.6) / (life * 0.4)));
+      if (t < life) requestAnimationFrame(frame); else el.remove();
+    })(last);
+  });
+}
+
+function showWin(){
+  const ov = document.getElementById('overlay');
+  const m = document.getElementById('modal');
+  let summary = '<ul style="text-align:left;line-height:1.9;margin:6px 0 0;padding-left:18px">';
+  for (const k in level.goal) {
+    const label = k==='reactionTotal' ? '总反应次数' : (REACTION_TYPE_LABEL[k] || k);
+    summary += '<li>'+label+'：'+((counts[k]||0))+' / '+level.goal[k]+'</li>';
+  }
+  summary += '</ul>';
+  const nextBtn = level.id < LEVELS.length
+    ? '<button class="btn" onclick="nextLevel()">下一关 →</button>'
+    : '<button class="btn" onclick="location.href=\'index.html\'">返回首页</button>';
+  m.innerHTML = '<h2>🎉 第'+level.id+'关通关！</h2>'+
+    '<div class="summary">'+summary+'</div>'+
+    '<div class="btns">'+nextBtn+'<button class="btn ghost" onclick="closeModal()">留在本页继续</button></div>';
+  ov.style.display = 'flex';
+  playAudio('win');
+}
+function closeModal(){ document.getElementById('overlay').style.display='none'; }
+function nextLevel(){ location.href = 'game.html?level=' + (level.id + 1); }
+
+initGame();
+</script>
+</body>
+</html>

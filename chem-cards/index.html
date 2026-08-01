@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>化学卡牌 · 首页</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="topbar">
+  <span class="title">🧪 化学卡牌闯关</span>
+  <span class="links">
+    <a href="index.html">首页</a>
+    <a href="cardpool.html">牌库</a>
+    <a href="setting.html">设置</a>
+  </span>
+</div>
+
+<div class="home" id="homeView">
+  <h1>化学卡牌</h1>
+  <div class="sub">拖动卡牌，触发化学反应！可选「闯关模式」挑战目标，或「学习模式」带提示自由练习。</div>
+  <div class="menu">
+    <div class="menu-card" onclick="goLevels()"><div class="ico">🎮</div><div class="t">闯关模式</div></div>
+    <div class="menu-card" onclick="location.href='game.html?mode=study'"><div class="ico">📚</div><div class="t">学习模式</div></div>
+    <div class="menu-card" onclick="location.href='cardpool.html'"><div class="ico">📖</div><div class="t">牌库展示</div></div>
+    <div class="menu-card" onclick="location.href='setting.html'"><div class="ico">⚙️</div><div class="t">设置</div></div>
+  </div>
+</div>
+
+<div class="home" id="levelsView" style="display:none;">
+  <h1>选择关卡</h1>
+  <div class="levels" id="levelList"></div>
+  <div><button class="btn ghost" onclick="showHome()">返回</button></div>
+</div>
+
+<script src="config.js"></script>
+<script src="common.js"></script>
+<script>
+applyTheme();
+function showHome(){ document.getElementById('homeView').style.display='flex'; document.getElementById('levelsView').style.display='none'; }
+function goLevels(){
+  document.getElementById('homeView').style.display='none';
+  const wrap = document.getElementById('levelList'); wrap.innerHTML='';
+  LEVELS.forEach(l=>{
+    const d = document.createElement('div'); d.className='level-card';
+    d.innerHTML = '<div class="lv">第 '+l.id+' 关</div><div class="nm">'+esc(l.name)+'</div><div class="ds">'+esc(l.desc)+'</div>';
+    d.onclick = ()=> location.href='game.html?level='+l.id;
+    wrap.appendChild(d);
+  });
+  document.getElementById('levelsView').style.display='flex';
+}
+</script>
+</body>
+</html>

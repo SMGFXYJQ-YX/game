@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>化学卡牌 · 设置</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="topbar">
+  <span class="title">⚙️ 设置</span>
+  <span class="links">
+    <a href="index.html">首页</a>
+    <a href="cardpool.html">牌库</a>
+    <a href="setting.html">设置</a>
+  </span>
+</div>
+
+<div class="settings">
+  <h2>设置</h2>
+  <div class="row">
+    <span>背景颜色</span>
+    <div class="theme-swatches" id="swatches"></div>
+  </div>
+  <div class="row">
+    <span>音效总开关</span>
+    <input type="checkbox" id="soundOn">
+  </div>
+  <div class="row">
+    <span>背景音乐</span>
+    <input type="checkbox" id="bgmOn">
+  </div>
+  <div class="row">
+    <span>音量</span>
+    <input type="range" id="volume" min="0" max="100">
+  </div>
+  <div class="row">
+    <span>卡牌类别配色</span>
+    <input type="checkbox" id="showCardColor">
+  </div>
+  <div class="row">
+    <span>操作</span>
+    <span>
+      <button class="btn" onclick="resetDefaults()">恢复默认</button>
+      <button class="btn ghost" onclick="applyAndBack()">完成</button>
+    </span>
+  </div>
+  <div class="hint">背景颜色为全局主题，保存后所有页面生效（蓝白为初始配色）。音效资源为占位，可在 config.js 的 AUDIO_SRC 中替换为真实地址。</div>
+</div>
+
+<script src="config.js"></script>
+<script src="common.js"></script>
+<script>
+applyTheme();
+const $ = id => document.getElementById(id);
+const soundOn=$('soundOn'), bgmOn=$('bgmOn'), volume=$('volume'), showCardColor=$('showCardColor');
+const s = getSettings();
+soundOn.checked = s.soundOn; bgmOn.checked = s.bgmOn; volume.value = s.volume; showCardColor.checked = s.showCardColor;
+
+const sw = $('swatches');
+Object.keys(THEMES).forEach(k => {
+  const t = THEMES[k];
+  const d = document.createElement('div');
+  d.className = 'swatch' + (k === s.theme ? ' active' : '');
+  d.style.background = t.bg; d.title = t.name;
+  d.onclick = () => {
+    document.querySelectorAll('.swatch').forEach(x => x.classList.remove('active'));
+    d.classList.add('active');
+    const ns = getSettings(); ns.theme = k; saveSettings(ns); applyTheme();
+  };
+  sw.appendChild(d);
+});
+
+function saveAll(){
+  const ns = getSettings();
+  ns.soundOn = soundOn.checked; ns.bgmOn = bgmOn.checked;
+  ns.volume = +volume.value; ns.showCardColor = showCardColor.checked;
+  saveSettings(ns); applyTheme();
+}
+soundOn.onchange = saveAll; bgmOn.onchange = saveAll;
+volume.oninput = saveAll; showCardColor.onchange = saveAll;
+
+function resetDefaults(){
+  saveSettings(Object.assign({}, DEFAULT_SETTINGS));
+  location.reload();
+}
+function applyAndBack(){ saveAll(); location.href = 'index.html'; }
+</script>
+</body>
+</html>

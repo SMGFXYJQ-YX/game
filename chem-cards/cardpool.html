@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>化学卡牌 · 牌库</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="topbar">
+  <span class="title">📚 牌库展示</span>
+  <span class="links">
+    <a href="index.html">首页</a>
+    <a href="cardpool.html">牌库</a>
+    <a href="setting.html">设置</a>
+  </span>
+</div>
+
+<div class="pool-controls">
+  <span>卡池：</span>
+  <button class="filter-btn active" data-pool="study" onclick="setPool('study',this)">学习池（全量）</button>
+  <button class="filter-btn" data-pool="ent" onclick="setPool('ent',this)">娱乐池（高频）</button>
+  <span style="margin-left:14px">类别：</span>
+  <select id="catSel" onchange="render()"></select>
+  <span class="hint" style="margin-left:auto">点击返回首页可在「开始游戏」进入关卡</span>
+</div>
+<div class="pool-grid" id="poolGrid"></div>
+
+<script src="config.js"></script>
+<script src="common.js"></script>
+<script>
+applyTheme();
+const $ = id => document.getElementById(id);
+const catSel = $('catSel');
+const cats = {};
+CARD_POOL.forEach(c => { if (!cats[c.type]) cats[c.type] = (CARD_TYPES[c.type]||{}).label || c.type; });
+catSel.innerHTML = '<option value="all">全部类别</option>' +
+  Object.keys(cats).map(k => '<option value="'+k+'">'+cats[k]+'</option>').join('');
+
+let curPool = 'study';
+function setPool(p, btn){
+  curPool = p;
+  document.querySelectorAll('.filter-btn[data-pool]').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  render();
+}
+
+function render(){
+  const grid = $('poolGrid'); grid.innerHTML='';
+  const cat = catSel.value;
+  CARD_POOL.filter(c => {
+    if (cat !== 'all' && c.type !== cat) return false;
+    if (curPool === 'ent' && !c.ent) return false; // 娱乐池=高频子集
+    return true;
+  }).forEach(c => {
+    const box = document.createElement('div'); box.className='pc';
+    box.appendChild(cardEl(c, { small:true }));
+    const meta = document.createElement('div'); meta.className='meta';
+    meta.textContent = c.name + ' · ' + (c.ent ? '娱乐+学习' : '仅学习');
+    const pn = partnersOf(c.id).length;
+    meta.textContent += ' · 可反应 ' + pn + ' 张';
+    if (DECOMPOSABLE[c.id]) meta.textContent += ' · 可分解';
+    box.appendChild(meta);
+    grid.appendChild(box);
+  });
+}
+render();
+</script>
+</body>
+</html>
